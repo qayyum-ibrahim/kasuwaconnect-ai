@@ -1,0 +1,46 @@
+{
+  "features": [
+    "avg_daily_transactions",
+    "avg_transaction_amount",
+    "trade_days_per_week",
+    "supplier_diversity",
+    "payment_regularity",
+    "dispute_rate",
+    "total_transactions",
+    "avg_weekly_volume",
+    "volume_growth_rate",
+    "months_active",
+    "category_encoded",
+    "state_encoded"
+  ],
+  "target": "credit_score",
+  "mae": 17.67,
+  "r2": 0.9922,
+  "n_training": 400,
+  "n_test": 100,
+  "feature_importance": {
+    "payment_regularity": 769,
+    "total_transactions": 526,
+    "avg_weekly_volume": 481,
+    "dispute_rate": 473,
+    "trade_days_per_week": 430,
+    "volume_growth_rate": 415,
+    "avg_daily_transactions": 351,
+    "avg_transaction_amount": 342,
+    "months_active": 334,
+    "supplier_diversity": 274,
+    "category_encoded": 151,
+    "state_encoded": 144
+  },
+  "score_range": {
+    "min": 0,
+    "max": 850
+  },
+  "tiers": {
+    "high": "650\u2013850",
+    "medium": "400\u2013649",
+    "low": "150\u2013399",
+    "unscored": "0\u2013149"
+  },
+  "trained_at": "2026-05-09T00:06:40.518975"
+}
