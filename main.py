@@ -167,6 +167,173 @@ def score_trader(req: CreditScoreRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ── Job Matching Schemas ──────────────────────────────────────────────────────
+
+class JobSeekerProfile(BaseModel):
+    seeker_id:            str
+    skills:               list[str]       = Field(default=[])
+    preferred_categories: list[str]       = Field(default=[])
+    languages:            list[str]       = Field(default=["english"])
+    experience_level:     str             = Field(default="none")
+    state:                str             = Field(default="")
+    market_location:      Optional[str]   = Field(default=None)
+
+class JobListing(BaseModel):
+    job_id:             str
+    title:              str
+    category:           str
+    skills_required:    list[str]       = Field(default=[])
+    languages_required: list[str]       = Field(default=["english"])
+    experience_level:   str             = Field(default="none")
+    pay_amount:         float           = Field(default=0)
+    pay_frequency:      str             = Field(default="daily")
+    state:              str             = Field(default="")
+    market_location:    Optional[str]   = Field(default=None)
+    trader_id:          Optional[str]   = Field(default=None)
+
+class MatchRequest(BaseModel):
+    seeker:       JobSeekerProfile
+    jobs:         list[JobListing]
+    top_n:        int = Field(default=5, ge=1, le=20)
+
+class JobMatch(BaseModel):
+    job_id:           str
+    title:            str
+    match_score:      float
+    match_percentage: int
+    matched_skills:   list[str]
+    score_breakdown:  dict
+    pay_amount:       float
+    pay_frequency:    str
+    state:            str
+    market_location:  Optional[str]
+
+class MatchResponse(BaseModel):
+    seeker_id:      str
+    total_jobs:     int
+    matches_found:  int
+    matches:        list[JobMatch]
+
+# ── Matching Logic ────────────────────────────────────────────────────────────
+
+EXPERIENCE_LEVELS = ["none", "beginner", "intermediate", "experienced"]
+
+def score_match(seeker: JobSeekerProfile, job: JobListing) -> dict:
+    """Score a single seeker-job pair. Returns breakdown and total."""
+
+    # 1. Skills overlap (35%)
+    seeker_skills  = set(s.lower().strip() for s in seeker.skills)
+    job_skills     = set(s.lower().strip() for s in job.skills_required)
+    matched_skills = list(seeker_skills & job_skills)
+
+    if len(job_skills) == 0:
+        skill_score = 1.0  # no specific skills required — open to all
+    else:
+        skill_score = len(matched_skills) / len(job_skills)
+
+    # 2. Category preference (25%)
+    category_score = 1.0 if job.category in seeker.preferred_categories else 0.3
+
+    # 3. Location proximity (20%)
+    if seeker.state.lower() == job.state.lower():
+        if seeker.market_location and job.market_location:
+            location_score = (
+                1.0 if seeker.market_location.lower() == job.market_location.lower()
+                else 0.7
+            )
+        else:
+            location_score = 0.7
+    else:
+        location_score = 0.1  # different state — very low match
+
+    # 4. Language match (15%)
+    seeker_langs = set(l.lower() for l in seeker.languages)
+    job_langs    = set(l.lower() for l in job.languages_required)
+    lang_overlap = seeker_langs & job_langs
+
+    if len(job_langs) == 0:
+        language_score = 1.0
+    else:
+        language_score = len(lang_overlap) / len(job_langs)
+
+    # 5. Experience fit (5%)
+    seeker_exp_idx = EXPERIENCE_LEVELS.index(seeker.experience_level) \
+        if seeker.experience_level in EXPERIENCE_LEVELS else 0
+    job_exp_idx = EXPERIENCE_LEVELS.index(job.experience_level) \
+        if job.experience_level in EXPERIENCE_LEVELS else 0
+
+    exp_diff = seeker_exp_idx - job_exp_idx
+    if exp_diff >= 0:
+        experience_score = 1.0   # seeker meets or exceeds requirement
+    elif exp_diff == -1:
+        experience_score = 0.5   # one level below — possible stretch
+    else:
+        experience_score = 0.1   # too far below requirement
+
+    # Weighted total
+    total = (
+        skill_score      * 0.35 +
+        category_score   * 0.25 +
+        location_score   * 0.20 +
+        language_score   * 0.15 +
+        experience_score * 0.05
+    )
+
+    return {
+        "total":              round(total, 4),
+        "matched_skills":     matched_skills,
+        "breakdown": {
+            "skills_score":     round(skill_score, 3),
+            "category_score":   round(category_score, 3),
+            "location_score":   round(location_score, 3),
+            "language_score":   round(language_score, 3),
+            "experience_score": round(experience_score, 3),
+        }
+    }
+
+# ── Match Route ───────────────────────────────────────────────────────────────
+
+@app.post("/match", response_model=MatchResponse)
+def match_jobs(req: MatchRequest):
+    try:
+        if not req.jobs:
+            return MatchResponse(
+                seeker_id     = req.seeker.seeker_id,
+                total_jobs    = 0,
+                matches_found = 0,
+                matches       = [],
+            )
+
+        scored = []
+        for job in req.jobs:
+            result = score_match(req.seeker, job)
+            if result["total"] > 0.15:  # filter out near-zero matches
+                scored.append({
+                    "job_id":           job.job_id,
+                    "title":            job.title,
+                    "match_score":      result["total"],
+                    "match_percentage": int(result["total"] * 100),
+                    "matched_skills":   result["matched_skills"],
+                    "score_breakdown":  result["breakdown"],
+                    "pay_amount":       job.pay_amount,
+                    "pay_frequency":    job.pay_frequency,
+                    "state":            job.state,
+                    "market_location":  job.market_location,
+                })
+
+        # Sort by match score descending
+        scored.sort(key=lambda x: x["match_score"], reverse=True)
+        top_matches = scored[:req.top_n]
+
+        return MatchResponse(
+            seeker_id     = req.seeker.seeker_id,
+            total_jobs    = len(req.jobs),
+            matches_found = len(top_matches),
+            matches       = top_matches,
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 @app.get("/model-info")
 def model_info():
     return model_meta
